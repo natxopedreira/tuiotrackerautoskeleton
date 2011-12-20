@@ -44,4 +44,6 @@ class testApp : public ofBaseApp{
 	ofPoint posmanoFiltrada[20];
 	//////area para deteccion de esqueleto
 	float adeX,adeY,adeAncho,adeAlto;
+	float representacion; ///0.0 no eres activo --- 1.0 eres activo
+	bool dentroArea;
 };

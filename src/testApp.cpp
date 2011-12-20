@@ -3,6 +3,33 @@
 //--------------------------------------------------------------
 //--------------------------------------------------------------
 //--------------------------------------------------------------
+ofxCvKalman *tuioPointSmoothed[32];
+
+TuioPoint updateKalman(int id, TuioPoint tp) {
+	if (id>=16) return NULL;
+	if(tuioPointSmoothed[id*2] == NULL) {
+		tuioPointSmoothed[id*2] = new ofxCvKalman(tp.getX());
+		tuioPointSmoothed[id*2+1] = new ofxCvKalman(tp.getY());
+		//tuioPointSmoothed[id*2+2] = new ofxCvKalman(tp.getZ());
+	} else {
+		tp.update(tuioPointSmoothed[id*2]->correct(tp.getX()),tuioPointSmoothed[id*2+1]->correct(tp.getY()),tp.getZ());
+	}
+	
+	return tp;
+}
+
+void clearKalman(int id) {
+	if (id>=16) return;
+	if(tuioPointSmoothed[id*2]) {
+		delete tuioPointSmoothed[id*2];
+		tuioPointSmoothed[id*2] = NULL;
+		delete tuioPointSmoothed[id*2+1];
+		tuioPointSmoothed[id*2+1] = NULL;
+		//delete tuioPointSmoothed[id*2+2];
+		//tuioPointSmoothed[id*2+2] = NULL;
+	}
+}
+
 void testApp::setup(){
 	ofSetLogLevel(ofxOpenNI::LOG_NAME,OF_LOG_VERBOSE);
 	openNI.setupFromXML("openni/config/ofxopenni_config.xml",false);
@@ -26,6 +53,18 @@ void testApp::setup(){
 	jui.addFloat("area deteccion Width", adeAncho, 0, 640);
 	jui.addFloat("area deteccion Height", adeAlto, 0, 480);
 	jui.y = 50;
+	
+	TuioTime::initSession();	
+	tuioServer = new TuioServer();
+	tuioServer->setSourceName("tuioTrackerAutoskeleton");
+	tuioServer->enableObjectProfile(false);
+	tuioServer->enableBlobProfile(false);
+	
+	dentroArea = false;
+	representacion = 0.0;
+	
+	for (int i=0;i<32;i++)
+		tuioPointSmoothed[i] = NULL;
 }
 
 //--------------------------------------------------------------
@@ -39,7 +78,7 @@ void testApp::update(){
 	//// para calcular la Y cojemos la pos y del torso
 	
 	for (int s = 0; s<openNiTracker.getNumberOfTrackedUsers(); s++) {
-
+		dentroArea = true;
 		//////////////////////////////////////////////////////////////////
 		//////////////////////////////////////////////////////////////////
 		ofxOpenNIUser usuario = openNiTracker.getTrackedUser(s);
@@ -50,9 +89,13 @@ void testApp::update(){
 		/// comprobamos que este dentro del area de interes, sino lo borramos del tracker y salimos
 		if(torso.begin.x<adeX || torso.begin.x>(adeX+adeAncho)){
 			openNiTracker.mataUser(s);
+			dentroArea = false;
 			return;
 		}
 		
+		anchoArea = (640/2.5) * (2300/torso.begin.z);
+		//altoArea = altoArea * (torso.begin.z/1000);
+		cout << "INFO::: " << torso.begin.z/1500 << endl;
 		//////////////////////////////////////////////////////////////////
 		//////////////////////////////////////////////////////////////////
 		//// actualizamos el area con la profundidad del user
@@ -82,14 +125,17 @@ void testApp::update(){
 		/////controlamos si la bola esta o no en zon activa
 		if((torso.begin.z - manoDerecha.end.z)>300){
 			activa=true;
+			representacion = 1.0;
 		}else{
 			activa=false;
+			representacion = 0.0;
 		}
 		//////////////////////////////////////////////////////////////////
 		//////////////////////////////////////////////////////////////////
 		posAreaZ = hombroDerecho.begin.z+100;
 		//////////////////////////////////////////////////////////////////
 		//////////////////////////////////////////////////////////////////
+		
 	}
 	///// jerky movimiento
 	///// hay que poner un threshold para comprobar si se ha movido lo suficiente para actualizar el pto
@@ -97,6 +143,33 @@ void testApp::update(){
 	cursorY = ofMap(fpy, 0.0f, altoArea, 0.0, 480.0, true);
 	//////////////////////////////////////////////////////////////////
 	//////////////////////////////////////////////////////////////////
+	TuioTime frameTime = TuioTime::getSessionTime();
+	tuioServer->initFrame(frameTime);
+	
+	if(openNiTracker.getNumberOfTrackedUsers()>0 && dentroArea == true) {
+		TuioPoint tp(cursorX,cursorY,representacion);
+		
+		TuioCursor *tcur = tuioServer->getClosestTuioCursor(tp.getX(),tp.getY());
+		if ((tcur==NULL) || (tcur->getDistance(&tp)>0.2)) { 
+			tcur = tuioServer->addTuioCursor(tp.getX(), tp.getY(), tp.getZ());
+			updateKalman(tcur->getCursorID(),tcur);
+		} else {
+			TuioPoint kp = updateKalman(tcur->getCursorID(),tp);
+			tuioServer->updateTuioCursor(tcur, kp.getX(), kp.getY(), kp.getZ());
+		}
+	}
+	
+	tuioServer->stopUntouchedMovingCursors();
+	
+	std::list<TuioCursor*> dead_cursor_list = tuioServer->getUntouchedCursors();
+	std::list<TuioCursor*>::iterator dead_cursor;
+	for (dead_cursor=dead_cursor_list.begin(); dead_cursor!= dead_cursor_list.end(); dead_cursor++) {
+		clearKalman((*dead_cursor)->getCursorID());
+	}
+	
+	tuioServer->removeUntouchedStoppedCursors();
+	tuioServer->commitFrame();
+	
 }
 void testApp::filtraPunto(ofPoint puntako){
 	float _x = 0;
@@ -122,24 +195,24 @@ void testApp::filtraPunto(ofPoint puntako){
 void testApp::draw(){
 	ofSetColor(255, 255, 255);
 	ofPushMatrix();
-		ofTranslate(0, 0, 0);
-		ofEnableAlphaBlending();
-		openNI.draw(433, 0);
-		fondoGui.draw(0, 0);
-		jui.draw();
+	ofTranslate(0, 0, 0);
+	ofEnableAlphaBlending();
+	openNI.draw(433, 0);
+	fondoGui.draw(0, 0);
+	jui.draw();
 	ofSetColor(178, 178, 178);
 	//jui.drawLabel("zona para detectar si el usuario esta dentro\r\ndel area de interes", 10, 50);
-		///dibujar el area
+	///dibujar el area
 	ofNoFill();
 	ofSetColor(200, 200, 200);
-		ofSetLineWidth(1);
-		ofRect(adeX+433, adeY, adeAncho, adeAlto);
+	ofSetLineWidth(1);
+	ofRect(adeX+433, adeY, adeAncho, adeAlto);
 	ofFill();
-		ofDisableAlphaBlending();
+	ofDisableAlphaBlending();
 	ofPopMatrix();
 	
 	ofPushMatrix();
-		ofTranslate(433, 0, 0);
+	ofTranslate(433, 0, 0);
 	
 	
 	if (openNiTracker.getNumberOfTrackedUsers()>0) {
@@ -168,6 +241,26 @@ void testApp::draw(){
 		}
 		
 		ofCircle(cursorX, cursorY, 15);
+	}
+	
+	std::list<TuioCursor*> alive_cursor_list = tuioServer->getTuioCursors();
+	std::list<TuioCursor*>::iterator alive_cursor;
+	for (alive_cursor=alive_cursor_list.begin(); alive_cursor!= alive_cursor_list.end(); alive_cursor++) {
+		TuioCursor *ac = (*alive_cursor);
+		
+		int xpos = ac->getX();
+		int ypos = ac->getY();
+		float activaOno = ac->getZ();
+		if(activaOno == 0){
+			ofSetColor(0, 200, 0);
+		}else{
+			ofSetColor(200, 0, 0);
+		}	
+		ofCircle(xpos,ypos ,15);
+		char idStr[32];
+		sprintf(idStr,"%d",ac->getCursorID());
+		ofDrawBitmapString(idStr, xpos+15, ypos+20);
+		
 	}
 	ofPopMatrix();
 }
